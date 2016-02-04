@@ -1,0 +1,349 @@
+## Compiler to NIOSII instruction set assemply language from simple mathematical
+## and print instrutions in a .txt file
+## Assumes spaces after each input
+## Assumes numbers are within the range the NIOSII processor can deal with
+## Assumes numbers entered are integer values
+## Assumes only + - * /  mathematical operations with 2 inputs each
+## Can only process 2 lines
+
+LOOPCOUNTER = 1  # All loops must be individually named
+
+
+def main():
+    """Main driver function."""
+    # obtain the name of the file to be compiled
+    fileName = raw_input("Type the file name and extension of the file to compile: ")
+    try:
+        fileList = readFile(fileName) # opens .txt and gets list of lines
+        newFile = [] # list of lines to be writen to the assembly language file
+        memItems = [] # items which must be stored in memeory 
+        resItems= [] # items for which memory space must be reserved
+        resCount = 1 # number of the current result (for when more lines are possible)
+        initFile(newFile) # provides necessary file starting lines
+        endMain(newFile) # ends the main routine
+
+        # parse commands and write required subroutines for each line in the fileList
+        for line in fileList:  
+            commandList = interpret(line) # determine type of operation[0] and format wordList[1]
+            if commandList[1] == 1: # indicates simple math equation
+                memItems.append(commandList[0][0])
+                memItems.append(commandList[0][2]) # store 2 values in memory
+                line = "RES" + str(resCount)
+                resItems.append(line) # we need to reserve space for the result
+                resCount = resCount + 1
+                executeMath(newFile, commandList[0], memItems, resItems[-1])  # writes +-*/ subroutines
+            elif commandList[1] == 2: # indicates a print statement
+                #insert the PrintString subroutine call in main
+                insertMainInstruction(newFile, "    call  PrintString") 
+                memItems.append(commandList[0][1]) # to store string in memory
+                executePrint(newFile, commandList[0], memItems) # write PrintString subroutine
+
+        endFile(newFile, memItems, resItems) # writes program ending instructions
+        writeFile(fileName, newFile) # prints newFile line list to fileName.s
+        print("Your file has been succesfully compiled.")
+    except:
+        print("Errors occured.  File not compiled.")
+
+def readFile(fileName):
+    """Opens the file and returns a list of its lines."""
+    f = open(fileName, 'r') # opens file provided by user
+    fileList = []       
+    for line in f:  
+        fileList.append(line.rstrip()) # add each line to the list of lines
+    f.close()  
+    return fileList #return a list of the file lines
+
+def interpret(line):
+    """Splits the line using sep = ' ' into a list of commands and numbers."""
+    flag = 0 #indicates type of operation called for
+    wordList = line.split() # split line into words based on spaces
+    if wordList[0].isdigit(): # if the first word is a digit 
+        flag = 1  #we're doing math
+    elif wordList[0] == "print": # if the first word is 'print'
+        string = wordList[1] # start with first 'word' we know is in the string
+        i = 2
+        while i < len(wordList): # concatinate words back into one string
+            string = string + " " + wordList[i]
+            i = i + 1
+        wordList = ["print", string]
+        flag = 2 # indicates print
+    return [wordList, flag]
+
+def insertMainInstruction(newFile, line):
+    """Inserts instructions in main after initialization."""
+    i = 0
+    # loop until we find the end of main, then add the line right before that
+    while newFile[i] != "_end:":
+        i = i + 1
+    newFile.insert(i, line)   
+
+def checkSubRoutine(newFile, subRoutine):
+    """Checks to see if a subroutine is already printed."""
+    printSubFlag = False # not yet printed
+    for element in newFile:
+        if element == subRoutine: #if any elements are the name of the subroutine
+            printSubFlag = True # it's already been printed, so don't re-print
+    return printSubFlag 
+    
+def executePrint(newFile, commandList, memItems):
+    """Write the PrintString subroutine."""
+    regList = ["ra", "r3", "r4"] # registers we must save
+    regListCopy = regList[:]
+    # if the subroutine isn't already printed:
+    if not checkSubRoutine(newFile, "PrintString:"): 
+        newFile.append("PrintString:") # start subroutine
+        saveReg(newFile, regListCopy) # save registers
+        msgCount = 0 # so we know which message we're supposed to load in
+        for element in memItems:
+            if element[0].isalpha(): # if it's a message not a number
+                msgCount = msgCount + 1
+        line = "    movia    r3, MSG" + str(msgCount)
+        newFile.append(line)
+        # loop loads new bytes into memory then checks that they're not 0.
+        # if 0, string is finished, if not 0, call PrintChar.
+        newFile.append("print_loop:") 
+        newFile.append("    ldb    r2, 0(r3)")
+        newFile.append("    beq    r2, r0, print_done")
+        newFile.append("    call   PrintChar")
+        newFile.append("    addi   r3, r3, 1")
+        newFile.append("    br     print_loop")
+        newFile.append("print_done:")
+        line = "    movi   r2, " + str(0x0a) # print a new line character after string
+        newFile.append(line)
+        newFile.append("    call   PrintChar")    
+        restoreReg(newFile, regList) # restore stored registers
+        newFile.append("    ret \n")
+        printChar(newFile) # write the PrintChar subroutine
+    return
+
+def printChar(newFile):
+    """Writes the PrintChar subroutine."""
+    regList = ["r3", "r4"] # registers used
+    regListCopy = regList[:]
+    # if PrintChar isn't already in newFile:
+    if not checkSubRoutine(newFile, "PrintChar: "):
+        newFile.append("PrintChar: ")
+        saveReg(newFile, regListCopy) # save registers
+        newFile.append("   movia    r3, JTAG_UART_BASE")
+        newFile.append("pc_loop:") # check if display is ready for input
+        newFile.append("   ldwio    r4, STATUS_OFFSET(r3)") #check status of display
+        newFile.append("   andhi    r4, r4, WSPACE_MASK") #look at correct bit(s)
+        newFile.append("   beq      r4, r0, pc_loop") #if the display isn't ready yet
+        newFile.append("   stwio    r2, DATA_OFFSET(r3)") #store data in correct bits
+        restoreReg(newFile, regList) #restore registers
+        newFile.append("    ret \n")
+    return
+    
+	
+def executeMath(newFile, commandList, MemItem, resItem):
+    """Determines what mathematical operation to execute and executes it as
+a subroutine."""
+    if commandList[1] == '+':   # addition
+        regList = ["r2", "r3", "ra"] # the registers we need to executes addition
+        initSubRoutineMath("AddNums", newFile, regList, MemItem) #initiate the subroutine
+        insertMainInstruction(newFile, "    call   AddNums") # print subroutine call in main
+        addNumbers(newFile)   # add the numbers
+        endSubRoutineMath(newFile, regList, resItem)   # end the subroutine
+        
+    elif commandList[1] == '-': # subraction
+        regList = ["r2", "r3", "ra"] # registers needed for subraction
+        initSubRoutineMath("SubNums", newFile, regList, MemItem) # initiate subroutine
+        insertMainInstruction(newFile, "    call   SubNums") # print subroutine call in main
+        subNumbers(newFile) # subract numbers
+        endSubRoutineMath(newFile, regList, resItem) # end subroutine
+        
+    elif commandList[1] == ('*' or 'X'): # multiplication
+        regList = ["r2", "r3", "ra"]    # registers needed for multiplication
+        initSubRoutineMath("MultNums", newFile, regList, MemItem) # initiate subroutine
+        insertMainInstruction(newFile, "    call   MultNums") # print subroutine call in main
+        multNumbers(newFile) # multiply numbers
+        endSubRoutineMath(newFile, regList, resItem) # end subroutine
+        
+    elif commandList[1] == '/': #division
+        regList = ["r2", "r3", "ra"] # registers needed for division
+        initSubRoutineMath("DivNums", newFile, regList, MemItem) # initiate subroutine
+        insertMainInstruction(newFile, "    call   DivNums") # print subroutine call in main
+        divNumbers(newFile) # divide numbers
+        endSubRoutineMath(newFile, regList, resItem) # end subroutine
+        
+    printResHex(newFile) # prints the result to the JTAG-UART interface in hexadecimal
+    return 
+
+def printResHex(newFile):
+    """Print out the result of the mathematical operation in hexadecimal."""
+    regList= ["r4", "r3", "ra"] # registers used
+    line = "PrintHexDigit:"
+    # if the subroutine isn't already in newFile:
+    if not checkSubRoutine(newFile, line):
+        newFile.append("PrintHexDigit:")
+        saveReg(newFile, regList[:]) # save registers
+        newFile.append("    movi   r4, 10")
+        newFile.append("    blt    r2, r4, printhex_if")
+        newFile.append("    subi   r2, r2, 10")
+        newFile.append("    addi   r2, r2, 'A'")
+        newFile.append("    br     printhex_end \n")
+        newFile.append("printhex_if:")
+        newFile.append("    addi   r2, r2, '0' \n")
+        newFile.append("printhex_end:")
+        newFile.append("    call   PrintChar")
+        line = "    movi   r2, " + str(0x0a) # print a new line after result
+        newFile.append(line)
+        newFile.append("    call   PrintChar")
+        restoreReg(newFile, regList[:]) # restore registers
+        newFile.append("    ret \n")
+        printChar(newFile)
+    return
+    
+
+def initSubRoutineMath(SubRouteName, newFile, regList, memItems):
+    """Initiates the math subroutine by saving registers to memory and loading the
+operands into the registers."""
+    regListCop = regList[:] # copy to avoid changing original
+    line = SubRouteName + ":"
+    # if the subroutine isn't already in newFile:
+    if not checkSubRoutine(newFile, line):
+        newFile.append(line)
+        saveReg(newFile, regListCop) # save registers
+        numVals = 0
+        # the number of numerical items we have set to store in memory tells
+        # us which value number we're loading for this subroutine
+        for element in memItems: # check list of items to store in memory
+            if element[0].isdigit(): # if it's a number, increment the counter
+                numVals = numVals + 1
+        val1 = "VAL" + str(numVals - 1) # last two numbers in memItems
+        val2 = "VAL" + str(numVals)
+        loadReg(newFile, val1, regList[0]) #load value stored in memory into r2
+        loadReg(newFile, val2, regList[1]) #load value stored in memory into r3
+    return
+
+def endSubRoutineMath(newFile, regList, resItem):
+    """Stores the result in memory and restores registers."""
+    regListCop = regList[:]
+    storeRes(newFile, resItem, "r2") #store the result in memory
+    newFile.append("    call PrintHexDigit") # so we print the result
+    restoreReg(newFile, regListCop) # restores the registers
+    newFile.append("    ret \n")
+    return
+
+def saveReg(newFile, regList):
+    """Saves the valuels of the registers in regList to memory and adjusts
+stack pointer."""
+    offset = len(regList)*4 # determine how far the stack pointer needs to move
+    line = "    subi   sp, sp, " + str(offset)
+    newFile.append(line)
+    # store all registers in order into the stack
+    while len(regList) > 0:
+        offset = offset - 4 # move offset one word distance
+        line = "    stw    " + regList.pop() + ", " + str(offset) + "(sp)"
+        newFile.append(line)
+    return 
+
+def restoreReg(newFile, regList):
+    """Returns old register values as subroutine ends and restores stack pointer."""
+    offset = 0
+    regList.reverse()
+    # restore values to all registers from the stack in order
+    while len(regList) > 0:
+        line = "    ldw    " + regList.pop() + ", " + str(offset) + "(sp)"
+        newFile.append(line)
+        offset = offset + 4 # move offset one word distance
+    line = "    addi   sp, sp, " + str(offset)
+    newFile.append(line)
+    return 
+
+	
+def addNumbers(newFile):
+    """Adds the value in register r2 to the value in register r3 then
+stores the result in register r4."""
+    newFile.append("    add    r2, r2, r3") #add registers 2 and 3; storein register 4
+    return
+
+def subNumbers(newFile):
+    """Subtracts the value in register r3 from the value in register r2 then
+stores the result in register r4."""
+    newFile.append("    sub    r2, r2, r3")# subtract r3 from r2; store in register 4
+    return
+
+def multNumbers(newFile):
+    """Multiplies the value in register r2 and the value in register r3 then
+stores the result in register r4."""
+    newFile.append("    mul    r2, r2, r3" )# multiply registers 2 and 3; storein register 4
+    return
+
+def divNumbers(newFile):
+    """Divides the value in register r2 by the value in register r3 then
+stores the result in register r4."""  
+    newFile.append("    div    r2, r2, r3")# divide r2 by r3; store in register 4
+    return
+
+
+def loadReg(newFile, val_mem_loc, register):
+    """Loads the operand into the register."""
+    line = "    ldw    " + register + ", "+ val_mem_loc + "(r0)"  #form:  ldw    r2, VAL1(r0)
+    insertMainInstruction(newFile, line) # load the register in main
+    return
+
+def storeRes(newFile, val_mem_loc, register):
+    """Writes the result of the calculation into memory."""
+    line = "    stw    " + register + ", " + val_mem_loc + "(r0)"
+    newFile.append(line)
+    return
+
+def initFile(newFile):
+    """Writes the necessary document initiating lines and starts the main
+routine."""
+    newFile.append("    .equ STATUS_OFFSET,   4")
+    newFile.append("    .equ DATA_OFFSET,   0")
+    newFile.append("    .equ WSPACE_MASK,   0xFFFF")
+    newFile.append("    .equ JTAG_UART_BASE,	0x10001000") # display address
+    newFile.append("    .text")
+    newFile.append("    .global _start") # make _start visible to linkers
+    newFile.append("    .org 0")
+    newFile.append("_start:")  # program execution begins from here
+    newFile.append("    movia  sp, 0x007FFFFC")
+    return 
+
+def endMain(newFile):
+    """Finish main with an infinite loop."""
+    newFile.append("_end:")
+    newFile.append("    br  _end \n")
+    return
+  
+def endFile(newFile, memItems, resItems):
+    """Finish the file by assigning memory locations."""
+    newFile.append("    .org 0x1000") # address where memory storage begins
+    msgCount = 1 # counts number of messages
+    valCount = 1 # counts number of values
+    # writes all numbers first
+    for element in memItems:
+        if element.isdigit():
+            line = "VAL" + str(valCount) + ":    .word  " + element
+            valCount = valCount + 1
+            newFile.append(line)
+    # writes all messages second
+    for element in memItems:
+        if not element.isdigit():
+            line = "MSG" + str(msgCount)+":    .asciz  "+'"'+element+'"'
+            msgCount = msgCount + 1
+            newFile.append(line)
+    # saves space for all results last
+    for element in resItems:
+        line = element + ":    .skip 4"
+        newFile.append(line)
+
+    newFile.append("    .end")  # then end!
+    return 
+
+def writeFile(fileName, newFile):
+    """Writes the file from newFile."""
+    fileName2 = fileName.rstrip("txt")
+    writeFileName = fileName2 + "s" # give the file an appropriate name
+    writeFile = open(writeFileName, 'w')
+    # write each line to the file with a new line character at the end
+    for element in newFile:
+        writeFile.write(element)
+        writeFile.write("\n")
+    return
+
+
+main()
